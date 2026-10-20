@@ -1,0 +1,59 @@
+name: Verify
+
+on:
+  push:
+    branches: ["verify/**"]
+
+permissions:
+  contents: read
+
+env:
+  NASSL_REF: "38fd5a30c9ca2bdaf7c270e5ab15147694d0f4aa"
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check out nassl
+        if: github.event.repository.name == 'sslyze'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: nabla-c0d3/nassl
+          ref: ${{ env.NASSL_REF }}
+          path: nassl-src
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      - name: Build and install nassl
+        working-directory: ${{ github.event.repository.name == 'sslyze' && 'nassl-src' || '.' }}
+        run: |
+          uv sync --dev
+          # build.all downloads zlib and OpenSSL; one retry covers a transient download failure
+          uv run invoke build.all || uv run invoke build.all
+          python -m pip install setuptools wheel
+          python -m pip install --no-build-isolation .
+          set -- "$PWD"/deps/openssl-openssl-[4-9]*/apps/openssl
+          [ "$#" -eq 1 ] && [ -x "$1" ] || { echo "expected one OpenSSL 4+ binary, found: $*"; exit 1; }
+          echo "NASSL_OPENSSL=$1" >> "$GITHUB_ENV"
+
+      - name: Install sslyze
+        if: github.event.repository.name == 'sslyze'
+        run: |
+          python -m pip install -e .
+          python -m pip install -r requirements-dev.txt
+
+      - name: Record versions
+        run: |
+          git rev-parse HEAD
+          if [ -d nassl-src ]; then git -C nassl-src rev-parse HEAD; fi
+          python -m pip list | grep -i -E '^(nassl|sslyze) '
+          "$NASSL_OPENSSL" version
+
+      - name: Run verification
+        run: bash verify/run.sh
